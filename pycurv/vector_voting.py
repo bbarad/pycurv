@@ -10,6 +10,67 @@ from os.path import isfile
 
 from .surface_graphs import TriangleGraph, PointGraph
 
+
+def _chunk_indices(indices, chunk_size):
+    """Split indices into chunks for batched parallel processing.
+
+    Args:
+        indices: Iterable of indices to chunk
+        chunk_size: Maximum size of each chunk
+
+    Returns:
+        List of lists, each containing up to chunk_size indices
+    """
+    indices = list(indices)
+    return [indices[i:i + chunk_size] for i in range(0, len(indices), chunk_size)]
+
+
+def _process_vertex_chunk_first_pass(vertex_indices, sg, g_max, a_max, sigma, full_dist_map):
+    """Process a chunk of vertices for the first pass (normal estimation).
+
+    Args:
+        vertex_indices: List of vertex indices to process
+        sg: Surface graph object
+        g_max: Maximum geodesic distance
+        a_max: Maximum triangle area
+        sigma: Sigma parameter for weighting
+        full_dist_map: Full distance map or None
+
+    Returns:
+        List of (num_neighbors, class_v, n_v, t_v) tuples for each vertex
+    """
+    results = []
+    for idx in vertex_indices:
+        result = sg.first_pass(idx, g_max=g_max, a_max=a_max,
+                               sigma=sigma, full_dist_map=full_dist_map)
+        results.append(result)
+    return results
+
+
+def _process_vertex_chunk_second_pass(vertex_indices, sg, g_max, sigma,
+                                       page_curvature_formula, a_max, full_dist_map):
+    """Process a chunk of vertices for the second pass (curvature estimation).
+
+    Args:
+        vertex_indices: List of vertex indices to process
+        sg: Surface graph object
+        g_max: Maximum geodesic distance
+        sigma: Sigma parameter for weighting
+        page_curvature_formula: Whether to use Page's curvature formula
+        a_max: Maximum triangle area (0.0 to disable area weighting)
+        full_dist_map: Full distance map or None
+
+    Returns:
+        List of (t_1, t_2, kappa_1, kappa_2, gauss, mean, shape, curvedness) tuples
+    """
+    results = []
+    for idx in vertex_indices:
+        result = sg.second_pass(idx, g_max=g_max, sigma=sigma,
+                                page_curvature_formula=page_curvature_formula,
+                                a_max=a_max, full_dist_map=full_dist_map)
+        results.append(result)
+    return results
+
 """
 Contains a function implementing the normal vector voting algorithm (Page et
 al., 2002) with adaptation.
@@ -212,6 +273,15 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
     else:
         full_dist_map = None
 
+    # Initialize distance cache for large graphs when not using full_dist_map
+    # The cache stores Dijkstra results to reduce redundant computations
+    graph_num_vertices = sg.graph.num_vertices()
+    if graph_num_vertices > 50000 and full_dist_map is None:
+        cache_size = min(50000, graph_num_vertices // 10)
+        print("Initializing distance cache with size {} for {} vertices".format(
+            cache_size, graph_num_vertices))
+        sg.get_distance_cache(g_max, max_cache_size=cache_size)
+
     t_end0 = time.time()
     duration0 = t_end0 - t_begin0
     minutes, seconds = divmod(duration0, 60)
@@ -243,13 +313,24 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
     if cores > 1:  # parallel processing
         p = pp.ProcessPool(cores)
         print('Opened a pool with {} processes'.format(cores))
-        results_list = p.map(partial(first_pass,
-                                     g_max=g_max, a_max=a_max, sigma=sigma,
-                                     full_dist_map=full_dist_map),
-                             list(range(num_v)))  # a list of vertex v indices
+
+        # Use chunked processing to reduce IPC overhead
+        # Each chunk is processed as a batch, reducing task count from num_v to ~num_v/chunk_size
+        chunk_size = max(100, num_v // (cores * 6))
+        vertex_chunks = _chunk_indices(range(num_v), chunk_size)
+        print('Processing {} vertices in {} chunks of ~{} vertices each'.format(
+            num_v, len(vertex_chunks), chunk_size))
+
+        chunk_results = p.map(
+            partial(_process_vertex_chunk_first_pass, sg=sg,
+                    g_max=g_max, a_max=a_max, sigma=sigma,
+                    full_dist_map=full_dist_map),
+            vertex_chunks)
         p.close()
         p.clear()
 
+        # Flatten chunk results into a single list
+        results_list = [result for chunk in chunk_results for result in chunk]
         results_array = np.array(results_list, dtype=object)
         # Calculating average neighbors number:
         num_neighbors_array = results_array[:, 0]
@@ -464,17 +545,28 @@ def curvature_estimation(
         if cores > 1:  # parallel processing
             p = pp.ProcessPool(cores)
             print('Opened a pool with {} processes'.format(cores))
+
+            # Use chunked processing to reduce IPC overhead
+            num_good = len(good_vertices_ind)
+            chunk_size = max(100, num_good // (cores * 6))
+            vertex_chunks = _chunk_indices(good_vertices_ind, chunk_size)
+            print('Processing {} vertices in {} chunks of ~{} vertices each'.format(
+                num_good, len(vertex_chunks), chunk_size))
+
             # results_list has same length as good_vertices_ind
             # columns: t_1, t_2, kappa_1, kappa_2, gauss_curvature,
             # mean_curvature, shape_index, curvedness
-            results_list = p.map(partial(
-                second_pass, g_max=g_max, sigma=sigma,
-                page_curvature_formula=page_curvature_formula, a_max=a_max,
-                full_dist_map=full_dist_map),
-                good_vertices_ind)
+            chunk_results = p.map(
+                partial(_process_vertex_chunk_second_pass, sg=sg,
+                        g_max=g_max, sigma=sigma,
+                        page_curvature_formula=page_curvature_formula,
+                        a_max=a_max, full_dist_map=full_dist_map),
+                vertex_chunks)
             p.close()
             p.clear()
 
+            # Flatten chunk results into a single list
+            results_list = [result for chunk in chunk_results for result in chunk]
             results_array = np.array(results_list, dtype=object)
             t_1_array = results_array[:, 0]
             t_2_array = results_array[:, 1]

@@ -57,6 +57,11 @@ class SegmentationGraph(object):
         connected by an edge in a tuple form ((x1, y1, z1), (x2, y2, z2)).
         """
 
+        self._distance_cache = None
+        """GeodesicDistanceCache: LRU cache for geodesic distance computations.
+        Initialized lazily via get_distance_cache() for large graphs.
+        """
+
     @staticmethod
     def distance_between_voxels(voxel1, voxel2):
         """
@@ -100,6 +105,55 @@ class SegmentationGraph(object):
             [x, y, z] = self.graph.vp.xyz[vd]
             self.coordinates_to_vertex_index[
                 (x, y, z)] = self.graph.vertex_index[vd]
+
+    def get_distance_cache(self, g_max, max_cache_size=10000):
+        """
+        Get or create the geodesic distance cache for this graph.
+
+        The cache stores Dijkstra shortest path results to avoid redundant
+        computations when processing adjacent vertices with overlapping
+        neighborhoods.
+
+        Args:
+            g_max: Maximum geodesic distance for shortest_distance computations
+            max_cache_size: Maximum number of distance arrays to cache
+
+        Returns:
+            GeodesicDistanceCache instance
+        """
+        if self._distance_cache is None:
+            from .distance_cache import GeodesicDistanceCache
+            self._distance_cache = GeodesicDistanceCache(
+                self.graph, max_cache_size, g_max)
+        return self._distance_cache
+
+    def clear_distance_cache(self):
+        """Clear the geodesic distance cache if it exists."""
+        if self._distance_cache is not None:
+            self._distance_cache.clear()
+            self._distance_cache = None
+
+    def compute_batch_distances(self, source_indices, g_max):
+        """
+        Compute geodesic distances from multiple source vertices efficiently.
+
+        For small batches (<100 sources), uses graph-tool directly.
+        For large batches, uses scipy's optimized Dijkstra implementation.
+
+        Args:
+            source_indices: List/array of source vertex indices
+            g_max: Maximum geodesic distance (used as max_dist)
+
+        Returns:
+            dict: Mapping from source vertex index to numpy array of distances
+        """
+        from .parallel_config import batch_dijkstra
+        return batch_dijkstra(
+            self.graph,
+            source_indices,
+            self.graph.ep.distance,
+            max_dist=g_max
+        )
 
     def calculate_density(self, size, scale, mask=None, target_coordinates=None,
                           verbose=False):
@@ -550,6 +604,9 @@ class SegmentationGraph(object):
         """
         if full_dist_map is not None:
             dist_v = full_dist_map[v].get_array()
+        elif self._distance_cache is not None:
+            # Use LRU cache for distance computations
+            dist_v = self._distance_cache.get_distances(v)
         else:
             dist_v = shortest_distance(self.graph, source=v, target=None,
                                        weights=self.graph.ep.distance,
