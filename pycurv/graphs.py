@@ -62,6 +62,12 @@ class SegmentationGraph(object):
         Initialized lazily via get_distance_cache() for large graphs.
         """
 
+        self._spatial_index = None
+        """SpatialIndex: KD-tree based spatial index for fast Euclidean neighbor
+        queries. Used to pre-filter candidates for geodesic neighbor search.
+        Initialized lazily via get_spatial_index().
+        """
+
     @staticmethod
     def distance_between_voxels(voxel1, voxel2):
         """
@@ -132,6 +138,27 @@ class SegmentationGraph(object):
         if self._distance_cache is not None:
             self._distance_cache.clear()
             self._distance_cache = None
+
+    def get_spatial_index(self):
+        """
+        Get or create the spatial index (KD-tree) for this graph.
+
+        The spatial index enables fast Euclidean neighbor queries, which are
+        used to pre-filter candidates for geodesic neighbor search. Since
+        geodesic distance >= Euclidean distance, vertices beyond Euclidean
+        radius cannot be within geodesic radius.
+
+        Returns:
+            SpatialIndex instance
+        """
+        if self._spatial_index is None:
+            from .spatial_index import SpatialIndex
+            self._spatial_index = SpatialIndex(self.graph)
+        return self._spatial_index
+
+    def clear_spatial_index(self):
+        """Clear the spatial index if it exists."""
+        self._spatial_index = None
 
     def compute_batch_distances(self, source_indices, g_max):
         """
@@ -587,6 +614,11 @@ class SegmentationGraph(object):
         considered. The distances are calculated with a breadth-first search
         (BFS) or Dijkstra's algorithm.
 
+        When a spatial index is available and no full distance map or cache
+        exists, uses KD-tree pre-filtering to reduce the search space. Since
+        geodesic distance >= Euclidean distance, vertices beyond Euclidean
+        radius g_max cannot be geodesic neighbors.
+
         Args:
             v (graph_tool.Vertex): the source vertex
             g_max: maximal geodesic distance (in the units of the graph)
@@ -602,29 +634,84 @@ class SegmentationGraph(object):
             a dictionary mapping a neighbor vertex index to the geodesic
             distance from vertex v
         """
+        vertex = self.graph.vertex
+        orientation_class = self.graph.vp.orientation_class
+        neighbor_id_to_dist = dict()
+        source_idx = int(v)
+
         if full_dist_map is not None:
+            # Full distance map available - use it directly
             dist_v = full_dist_map[v].get_array()
+            idxs = np.where(dist_v <= g_max)[0]
+            for idx in idxs:
+                dist = dist_v[idx]
+                if dist != 0:
+                    v_i = vertex(idx)
+                    if (not only_surface) or orientation_class[v_i] == 1:
+                        neighbor_id_to_dist[idx] = dist
+
         elif self._distance_cache is not None:
             # Use LRU cache for distance computations
             dist_v = self._distance_cache.get_distances(v)
+            idxs = np.where(dist_v <= g_max)[0]
+            for idx in idxs:
+                dist = dist_v[idx]
+                if dist != 0:
+                    v_i = vertex(idx)
+                    if (not only_surface) or orientation_class[v_i] == 1:
+                        neighbor_id_to_dist[idx] = dist
+
+        elif self._spatial_index is not None:
+            # Use KD-tree pre-filtering for efficient geodesic neighbor search
+            # Since geodesic >= Euclidean, only vertices within Euclidean g_max
+            # could possibly be within geodesic g_max
+            candidate_indices = self._spatial_index.find_euclidean_neighbors(
+                source_idx, g_max)
+
+            if len(candidate_indices) == 0:
+                if verbose:
+                    print("0 neighbors (no Euclidean candidates)")
+                return neighbor_id_to_dist
+
+            # Remove source vertex from candidates
+            candidate_indices = candidate_indices[candidate_indices != source_idx]
+
+            if len(candidate_indices) == 0:
+                if verbose:
+                    print("0 neighbors")
+                return neighbor_id_to_dist
+
+            # Convert to list of vertex objects for shortest_distance target
+            candidate_vertices = [vertex(int(idx)) for idx in candidate_indices]
+
+            # Compute geodesic distances only to candidate targets
+            # This allows Dijkstra to terminate early once all targets are reached
+            dist_to_targets = shortest_distance(
+                self.graph, source=v, target=candidate_vertices,
+                weights=self.graph.ep.distance, max_dist=g_max)
+
+            # Process results - dist_to_targets is array matching candidate order
+            for i, idx in enumerate(candidate_indices):
+                dist = dist_to_targets[i]
+                # Check if within g_max (unreachable vertices have inf distance)
+                if dist <= g_max:
+                    v_i = vertex(int(idx))
+                    if (not only_surface) or orientation_class[v_i] == 1:
+                        neighbor_id_to_dist[int(idx)] = float(dist)
+
         else:
+            # No optimizations available - compute full distance map
             dist_v = shortest_distance(self.graph, source=v, target=None,
                                        weights=self.graph.ep.distance,
                                        max_dist=g_max)
             dist_v = dist_v.get_array()
-        # numpy array of distances from v to all vertices, in vertex index order
-
-        vertex = self.graph.vertex
-        orientation_class = self.graph.vp.orientation_class
-        neighbor_id_to_dist = dict()
-
-        idxs = np.where(dist_v <= g_max)[0]  # others are INF
-        for idx in idxs:
-            dist = dist_v[idx]
-            if dist != 0:  # ignore the source vertex itself
-                v_i = vertex(idx)
-                if (not only_surface) or orientation_class[v_i] == 1:
-                    neighbor_id_to_dist[idx] = dist
+            idxs = np.where(dist_v <= g_max)[0]
+            for idx in idxs:
+                dist = dist_v[idx]
+                if dist != 0:
+                    v_i = vertex(idx)
+                    if (not only_surface) or orientation_class[v_i] == 1:
+                        neighbor_id_to_dist[idx] = dist
 
         if verbose:
             print("{} neighbors".format(len(neighbor_id_to_dist)))

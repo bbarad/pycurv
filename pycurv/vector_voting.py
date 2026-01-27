@@ -273,9 +273,19 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
     else:
         full_dist_map = None
 
-    # Initialize distance cache for large graphs when not using full_dist_map
-    # The cache stores Dijkstra results to reduce redundant computations
+    # Initialize spatial index and distance cache for efficient neighbor search
+    # The spatial index uses a KD-tree for fast Euclidean pre-filtering
+    # The distance cache stores Dijkstra results to reduce redundant computations
     graph_num_vertices = sg.graph.num_vertices()
+
+    # Initialize spatial index for KD-tree based Euclidean pre-filtering
+    # This is beneficial for all graph sizes when not using full_dist_map
+    if full_dist_map is None:
+        print("Initializing spatial index (KD-tree) for {} vertices".format(
+            graph_num_vertices))
+        sg.get_spatial_index()
+
+    # Also initialize distance cache for large graphs
     if graph_num_vertices > 50000 and full_dist_map is None:
         cache_size = min(50000, graph_num_vertices // 10)
         print("Initializing distance cache with size {} for {} vertices".format(
@@ -473,6 +483,15 @@ def curvature_estimation(
         print("Maximal triangle area = {}".format(a_max))
     else:
         a_max = 0.0
+
+    # Initialize spatial index if not already present (for standalone use)
+    # When called from normals_directions_and_curvature_estimation, the index
+    # is already initialized by normals_estimation
+    if full_dist_map is None and sg._spatial_index is None:
+        graph_num_vertices = sg.graph.num_vertices()
+        print("Initializing spatial index (KD-tree) for {} vertices".format(
+            graph_num_vertices))
+        sg.get_spatial_index()
 
     # * Adding vertex properties to be filled by all curvature methods *
     # vertex properties for storing the estimated principal directions of the
