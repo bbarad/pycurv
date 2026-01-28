@@ -696,7 +696,7 @@ class PointGraph(SurfaceGraph):
 
     def build_graph_from_vtk_surface(
             self, surface, scale=(1, 1, 1), verbose=False,
-            reverse_normals=False):
+            reverse_normals=False, suppress_vtk_warnings=True):
         """
         Builds the graph from the vtkPolyData surface, which is rescaled to
         given units according to the scale factor.
@@ -714,6 +714,8 @@ class PointGraph(SurfaceGraph):
                 information will be printed out
             reverse_normals (boolean, optional): if True (default False), the
                 triangle normals are reversed during graph generation
+            suppress_vtk_warnings (boolean, optional): if True (default), VTK
+                warnings from curvature calculation are suppressed
 
         Returns:
             rescaled surface to given units with VTK curvatures
@@ -731,8 +733,12 @@ class PointGraph(SurfaceGraph):
             invert = False
         else:
             invert = True
-        surface = add_curvature_to_vtk_surface(surface, "Minimum", invert)
-        surface = add_curvature_to_vtk_surface(surface, "Maximum", invert)
+        surface = add_curvature_to_vtk_surface(
+            surface, "Minimum", invert,
+            suppress_warnings=suppress_vtk_warnings)
+        surface = add_curvature_to_vtk_surface(
+            surface, "Maximum", invert,
+            suppress_warnings=suppress_vtk_warnings)
         surface = add_point_normals_to_vtk_surface(surface, reverse_normals)
 
         point_data = surface.GetPointData()
@@ -1146,7 +1152,8 @@ class TriangleGraph(SurfaceGraph):
         """dict: O(1) reverse lookup from cell_id to vertex index in the graph"""
 
     def build_graph_from_vtk_surface(self, surface, scale=(1, 1, 1),
-                                     verbose=False, reverse_normals=False):
+                                     verbose=False, reverse_normals=False,
+                                     suppress_vtk_warnings=True):
         """
         Builds the graph from the vtkPolyData surface, which is rescaled to
         given units according to the scale factor.
@@ -1165,6 +1172,8 @@ class TriangleGraph(SurfaceGraph):
                 information will be printed out
             reverse_normals (boolean, optional): if True (default False), the
                 triangle normals are reversed during graph generation
+            suppress_vtk_warnings (boolean, optional): if True (default), VTK
+                warnings from curvature calculation are suppressed
 
         Returns:
             rescaled surface to given units with VTK curvatures
@@ -1184,8 +1193,12 @@ class TriangleGraph(SurfaceGraph):
             invert = False
         else:
             invert = True
-        surface = add_curvature_to_vtk_surface(surface, "Minimum", invert)
-        surface = add_curvature_to_vtk_surface(surface, "Maximum", invert)
+        surface = add_curvature_to_vtk_surface(
+            surface, "Minimum", invert,
+            suppress_warnings=suppress_vtk_warnings)
+        surface = add_curvature_to_vtk_surface(
+            surface, "Maximum", invert,
+            suppress_warnings=suppress_vtk_warnings)
 
         if verbose:
             # Check numbers of cells and all points.
