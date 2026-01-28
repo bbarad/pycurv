@@ -83,8 +83,7 @@ class SurfaceGraph(graphs.SegmentationGraph):
                 2 if it belongs to a crease junction or 3 if it doesn't have a
                 preferred orientation
             estimated normal "n_v" (3x1 array) if class is 1, otherwise zeros
-            the estimated_tangent "t_v" (3x1 array) if class is 2, otherwise
-                zeros
+            estimated tangent "t_v" (3x1 array) if class is 2, otherwise zeros
 
         Notes:
             If epsilon = 0 and eta = 0, all triangles will be classified as
@@ -416,8 +415,7 @@ class SurfaceGraph(graphs.SegmentationGraph):
                 2 if it belongs to a crease junction or 3 if it doesn't have a
                 preferred orientation
             estimated normal "n_v" (3x1 array) if class is 1, otherwise zeros
-            the estimated_tangent "t_v" (3x1 array) if class is 2, otherwise
-                zeros
+            estimated_tangent "t_v" (3x1 array) if class is 2, otherwise zeros
         """
         if self.__class__.__name__ == 'TriangleGraph':
             num_neighbors, V_v = self.collect_normal_votes(
@@ -1144,15 +1142,13 @@ class TriangleGraph(SurfaceGraph):
         triangle-cell indices sharing this point.
         """
 
-        self.triangle_cell_ids = []
-        """a list of all added triangle cell indices, whose indices correspond
-        to graph vertex indices"""
-
-        self.cell_id_to_vertex_index = {}
-        """dict: O(1) reverse lookup from cell_id to vertex index in the graph"""
+        self.triangle_cell_ids = {}
+        """dict: a dictionary of all added triangle cell indices, mapping them
+        to their graph vertex indices"""
 
     def build_graph_from_vtk_surface(self, surface, scale=(1, 1, 1),
-                                     verbose=False, reverse_normals=False,
+                                     vtk_curv=True, verbose=False,
+                                     reverse_normals=False,
                                      suppress_vtk_warnings=True):
         """
         Builds the graph from the vtkPolyData surface, which is rescaled to
@@ -1168,6 +1164,10 @@ class TriangleGraph(SurfaceGraph):
                 generated from the segmentation in voxels
             scale (tuple, optional): pixel size (X, Y, Z) in given units for
                 scaling the surface and the graph (default (1, 1, 1))
+            vtk_curv (boolean, optional): if True (default), add VTK curvatures
+                at each triangle center by averaging the values at the three
+                triangle vertices. Setting this option to False can save time
+                for big surfaces, if VTK comparison is not needed.
             verbose (boolean, optional): if True (default False), some extra
                 information will be printed out
             reverse_normals (boolean, optional): if True (default False), the
@@ -1186,40 +1186,40 @@ class TriangleGraph(SurfaceGraph):
             # rescale the surface to units
             surface = rescale_surface(surface, scale)
 
-        # Adding curvatures to the vtkPolyData surface
-        # because VTK and we (gen_surface) have the opposite normal
-        # convention: VTK outwards pointing normals, we: inwards pointing
-        if reverse_normals:
-            invert = False
-        else:
-            invert = True
-        surface = add_curvature_to_vtk_surface(
-            surface, "Minimum", invert,
-            suppress_warnings=suppress_vtk_warnings)
-        surface = add_curvature_to_vtk_surface(
-            surface, "Maximum", invert,
-            suppress_warnings=suppress_vtk_warnings)
-
         if verbose:
             # Check numbers of cells and all points.
             print('{} cells'.format(surface.GetNumberOfCells()))
             print('{} points'.format(surface.GetNumberOfPoints()))
 
-        point_data = surface.GetPointData()
-        n = point_data.GetNumberOfArrays()
         min_curvatures = None
         max_curvatures = None
         gauss_curvatures = None
         mean_curvatures = None
-        for i in range(n):
-            if point_data.GetArrayName(i) == "Minimum_Curvature":
-                min_curvatures = point_data.GetArray(i)
-            elif point_data.GetArrayName(i) == "Maximum_Curvature":
-                max_curvatures = point_data.GetArray(i)
-            elif point_data.GetArrayName(i) == "Gauss_Curvature":
-                gauss_curvatures = point_data.GetArray(i)
-            elif point_data.GetArrayName(i) == "Mean_Curvature":
-                mean_curvatures = point_data.GetArray(i)
+        if vtk_curv:
+            # Adding curvatures to the vtkPolyData surface
+            # because VTK and we (gen_surface) have the opposite normal
+            # convention: VTK outwards pointing normals, we: inwards pointing
+            if reverse_normals:
+                invert = False
+            else:
+                invert = True
+            surface = add_curvature_to_vtk_surface(
+                surface, "Minimum", invert,
+                suppress_warnings=suppress_vtk_warnings)
+            surface = add_curvature_to_vtk_surface(
+                surface, "Maximum", invert,
+                suppress_warnings=suppress_vtk_warnings)
+            point_data = surface.GetPointData()
+            n = point_data.GetNumberOfArrays()
+            for i in range(n):
+                if point_data.GetArrayName(i) == "Minimum_Curvature":
+                    min_curvatures = point_data.GetArray(i)
+                elif point_data.GetArrayName(i) == "Maximum_Curvature":
+                    max_curvatures = point_data.GetArray(i)
+                elif point_data.GetArrayName(i) == "Gauss_Curvature":
+                    gauss_curvatures = point_data.GetArray(i)
+                elif point_data.GetArrayName(i) == "Mean_Curvature":
+                    mean_curvatures = point_data.GetArray(i)
 
         # 2. Add each triangle cell as a vertex to the graph. Ignore the
         # non-triangle cells and cell with area equal to zero.
@@ -1279,53 +1279,49 @@ class TriangleGraph(SurfaceGraph):
             if reverse_normals:
                 normal *= -1
 
-            # Get the min, max, Gaussian and mean curvatures (calculated by
-            # VTK) for each of 3 points of the triangle i and calculate the
-            # average curvatures:
-            avg_min_curvature = np.average(
-                [min_curvatures.GetTuple1(
-                    cell.GetPointId(j)) for j in range(0, 3)])
-            avg_max_curvature = np.average(
-                [max_curvatures.GetTuple1(
-                    cell.GetPointId(j)) for j in range(0, 3)])
-            avg_gauss_curvature = np.average(
-                [gauss_curvatures.GetTuple1(
-                    cell.GetPointId(j)) for j in range(0, 3)])
-            avg_mean_curvature = np.average(
-                [mean_curvatures.GetTuple1(
-                    cell.GetPointId(j)) for j in range(0, 3)])
-
             # Add the centroid as vertex to the graph, setting its properties:
             vd = self.graph.add_vertex()  # vertex descriptor
+            vd_id = self.graph.vertex_index[vd]
             self.graph.vp.xyz[vd] = center_xyz
-            self.coordinates_to_vertex_index[
-                tuple(center_xyz)] = self.graph.vertex_index[vd]
+            self.coordinates_to_vertex_index[tuple(center_xyz)] = vd_id
             self.graph.vp.area[vd] = area
             self.graph.vp.normal[vd] = normal
-            self.graph.vp.min_curvature[vd] = avg_min_curvature
-            self.graph.vp.max_curvature[vd] = avg_max_curvature
-            self.graph.vp.gauss_curvature[vd] = avg_gauss_curvature
-            self.graph.vp.mean_curvature[vd] = avg_mean_curvature
             self.graph.vp.points[vd] = points_xyz
+
+            if vtk_curv:
+                # Get the min, max, Gaussian and mean curvatures (calculated by
+                # VTK) for each of 3 points of the triangle i and calculate the
+                # average curvatures:
+                avg_min_curvature = np.average(
+                    [min_curvatures.GetTuple1(
+                        cell.GetPointId(j)) for j in range(0, 3)])
+                avg_max_curvature = np.average(
+                    [max_curvatures.GetTuple1(
+                        cell.GetPointId(j)) for j in range(0, 3)])
+                avg_gauss_curvature = np.average(
+                    [gauss_curvatures.GetTuple1(
+                        cell.GetPointId(j)) for j in range(0, 3)])
+                avg_mean_curvature = np.average(
+                    [mean_curvatures.GetTuple1(
+                        cell.GetPointId(j)) for j in range(0, 3)])
+                # Add the properties to the graph vertex:
+                self.graph.vp.min_curvature[vd] = avg_min_curvature
+                self.graph.vp.max_curvature[vd] = avg_max_curvature
+                self.graph.vp.gauss_curvature[vd] = avg_gauss_curvature
+                self.graph.vp.mean_curvature[vd] = avg_mean_curvature
 
             if verbose:
                 print('\tThe triangle centroid {} has been added to the graph '
                       'as a vertex. Triangle area = {}, normal = {},\n'
-                      'average minimal curvature = {},'
-                      'average maximal curvature = {}, points = {}.'.format(
+                      'points = {}.'.format(
                        self.graph.vp.xyz[vd], self.graph.vp.area[vd],
-                       self.graph.vp.normal[vd],
-                       self.graph.vp.min_curvature[vd],
-                       self.graph.vp.max_curvature[vd],
-                       self.graph.vp.points[vd]))
+                       self.graph.vp.normal[vd], self.graph.vp.points[vd]))
 
-            self.triangle_cell_ids.append(cell_id)
-            self.cell_id_to_vertex_index[cell_id] = len(self.triangle_cell_ids) - 1
+            self.triangle_cell_ids[cell_id] = vd_id
 
         # 3. Add edges for each cell / vertex.
-        for i, cell_id in enumerate(self.triangle_cell_ids):
-            # Note: i corresponds to the vertex number of each cell, because
-            # they were added in this order
+        for cell_id, i in self.triangle_cell_ids.items():
+            # Note: i corresponds to the vertex number of each cell
             cell = surface.GetCell(cell_id)
             if verbose:
                 print('(Triangle) cell number {}:'.format(cell_id))
@@ -1353,14 +1349,14 @@ class TriangleGraph(SurfaceGraph):
             p_i = self.graph.vp.xyz[vd_i]  # a list
             p_i = tuple(p_i)
 
-            # Iterate over the ready neighbor_cells and shared_points lists,
+            # Iterate over the ready neighbor_cells dict and shared_points list,
             # connecting cell i with a neighbor cell x with a "strong" edge
             # if they share 2 edges and with a "weak" edge otherwise (if
             # they share only 1 edge).
             for neighbor_cell_id, num_shared in neighbor_cell_shared_points.items():
                 # Get the vertex descriptor representing the cell x:
                 # vertex index of the current neighbor cell (O(1) lookup)
-                x = self.cell_id_to_vertex_index[neighbor_cell_id]
+                x = self.triangle_cell_ids[neighbor_cell_id]
                 # vertex descriptor of the current neighbor cell, vertex x
                 vd_x = self.graph.vertex(x)
 
@@ -1561,8 +1557,7 @@ class TriangleGraph(SurfaceGraph):
             print('Filtering out the vertices at the graph borders and their '
                   'edges...')
             # Set the filter to get only vertices NOT on border.
-            self.graph.set_vertex_filter(self.graph.vp.is_on_border,
-                                         inverted=True)
+            self.graph.set_vertex_filter(self.graph.vp.is_on_border.t(lambda x: 1-x))
             # Purge the filtered out vertices and edges permanently from the
             # graph:
             self.graph.purge_vertices()
@@ -1627,15 +1622,13 @@ class TriangleGraph(SurfaceGraph):
             print('Filtering out those vertices and their edges...')
             # Set the filter to get only vertices NOT within distance b to
             # border.
-            self.graph.set_vertex_filter(self.graph.vp.is_near_border,
-                                         inverted=True)
-            # Purge filtered out vertices and edges permanently from the graph:
+            self.graph.set_vertex_filter(self.graph.vp.is_near_border.t(lambda x: 1-x))
+            # Purge filtered out vertices and edges from the graph:
             self.graph.purge_vertices()
             # Remove the properties used for filtering that are no longer true:
             del self.graph.vertex_properties["num_strong_edges"]
             del self.graph.vertex_properties["is_on_border"]
-            del self.graph.vertex_properties["is_near_border"]
-            # Update graph's dictionary coordinates_to_vertex_index:
+            del self.graph.vertex_properties["is_near_border"]            # Update graph's dictionary coordinates_to_vertex_index:
             self.update_coordinates_to_vertex_index()
 
     def find_vertices_outside_mask(
@@ -1751,7 +1744,7 @@ class TriangleGraph(SurfaceGraph):
             # Set the filter to get only vertices NOT {near border and outside
             # mask}.
             self.graph.set_vertex_filter(
-                self.graph.vp.is_near_border_and_outside_mask, inverted=True)
+                self.graph.vp.is_near_border_and_outside_mask.t(lambda x: 1-x))
             # Purge filtered out vertices and edges permanently from the graph:
             self.graph.purge_vertices()
             # Remove the properties used for filtering that are no longer true:
@@ -1791,7 +1784,7 @@ class TriangleGraph(SurfaceGraph):
             print('Filtering out those vertices and edges not belonging to the '
                   'largest connected component...')
             # Set the filter to get only vertices belonging to the lcc.
-            self.graph.set_vertex_filter(is_in_lcc, inverted=False)
+            self.graph.set_vertex_filter(is_in_lcc)
             # Purge filtered out vertices and edges permanently from the graph:
             self.graph.purge_vertices()
             # Update graph's dictionary coordinates_to_vertex_index:
@@ -1848,8 +1841,8 @@ class TriangleGraph(SurfaceGraph):
                       'to the small components...')
                 # Set the filter to get only vertices NOT belonging to a small
                 # component.
-                self.graph.set_vertex_filter(self.graph.vp.small_component,
-                                             inverted=True)
+                self.graph.set_vertex_filter(
+                    self.graph.vp.small_component.t(lambda x: 1-x))
                 # Purge filtered out vertices and edges from the graph:
                 self.graph.purge_vertices()
                 # Update graph's dictionary coordinates_to_vertex_index:

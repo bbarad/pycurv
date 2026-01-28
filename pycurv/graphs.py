@@ -611,8 +611,7 @@ class SegmentationGraph(object):
         are within a given maximal geodesic distance g_max from it.
 
         Also finds the corresponding geodesic distances. All edges are
-        considered. The distances are calculated with a breadth-first search
-        (BFS) or Dijkstra's algorithm.
+        considered. The distances are calculated with Dijkstra's algorithm.
 
         When a spatial index is available and no full distance map or cache
         exists, uses KD-tree pre-filtering to reduce the search space. Since

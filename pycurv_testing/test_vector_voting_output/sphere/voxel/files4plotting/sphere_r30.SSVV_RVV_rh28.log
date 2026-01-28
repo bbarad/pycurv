@@ -4,9 +4,9 @@
 Reading in the surface file to get a vtkPolyData surface...
 
 Building the TriangleGraph from the vtkPolyData surface with curvatures...
-TriangleGraph generation took: 1.0 min 11.772927045822144 s
-<Graph object, undirected, with 18384 vertices and 111696 edges at 0x2baaee308510>
-Graph construction from surface took: 1.0 min 11.779479503631592 s
+TriangleGraph generation took: 0.0 min 32.541526079177856 s
+<Graph object, undirected, with 18384 vertices and 111696 edges at 0x2b89c6f99e10>
+Graph construction from surface took: 0.0 min 32.548348903656006 s
 
 Preparing for running modified Vector Voting...
 radius_hit = 28
@@ -14,30 +14,30 @@ g_max = 43.982297150257104
 Maximal triangle area = 0.8660254037844386
 epsilon = 0
 eta = 0
-Preparation took: 0.0 min 0.0006158351898193359 s
+Preparation took: 0.0 min 0.0006239414215087891 s
 
 Running modified Vector Voting for all vertices...
 
 First pass: estimating normals...
 number of vertices: 18384
 Calling find_geodesic_neighbors
-Opened a pool with 6 processes
+Opened a pool with 10 processes
 Average number of geodesic neighbors for all vertices: 8070.433420365535
 18384 surface patches
-First pass took: 102.0 min 1.699005365371704 s
-Preparation took: 0.0 min 1.3248422145843506 s
+First pass took: 65.0 min 28.71056628227234 s
+Preparation took: 0.0 min 1.4368152618408203 s
 
 Second pass: estimating principle curvatures and directions for surface patches using SSVV...
 18384 vertices to estimate curvature
-Second run of SSVV took: 1.0 min 13.599618911743164 s
-Preparation took: 0.0 min 1.5278189182281494 s
+Second run of SSVV took: 1.0 min 9.430345296859741 s
+Preparation took: 0.0 min 1.5096538066864014 s
 
 Second pass: estimating principle curvatures and directions for surface patches using RVV...
 18384 vertices to estimate curvature
 Calling find_geodesic_neighbors
-Opened a pool with 6 processes
-Second run of VV took: 143.0 min 6.901070594787598 s
-Whole method took: 246.0 min 25.070886373519897 s
+Opened a pool with 10 processes
+Second run of VV took: 90.0 min 27.747580766677856 s
+Whole method took: 157.0 min 8.853626251220703 s
 
 Evaluating SSVV...
 18384 "kappa_1" values

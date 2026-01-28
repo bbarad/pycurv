@@ -93,7 +93,7 @@ __author__ = 'Maria Salfer'
 def normals_directions_and_curvature_estimation(
         sg, radius_hit, epsilon=0, eta=0, methods=['VV'],
         page_curvature_formula=False, full_dist_map=False, graph_file='temp.gt',
-        area2=True, only_normals=False, poly_surf=None, cores=6, runtimes=''):
+        area2=True, only_normals=False, poly_surf=None, cores=10, runtimes=''):
     """
     Runs the modified Normal Vector Voting algorithm (with different options for
     the second pass) to estimate surface orientation, principle curvatures and
@@ -132,7 +132,7 @@ def normals_directions_and_curvature_estimation(
         poly_surf (vtkPolyData, optional): surface from which the graph was
             generated, scaled to given units (required only for SSVV, default
             None)
-        cores (int, optional): number of cores to run VV in parallel (default 6)
+        cores (int, optional): number of cores to run VV in parallel (default 10)
         runtimes (str, optional): if given, runtimes and some parameters are
             added to this file (default '')
 
@@ -183,7 +183,7 @@ def normals_directions_and_curvature_estimation(
 
 
 def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
-                       cores=6, runtimes='', graph_file='temp.gt'):
+                       cores=10, runtimes='', graph_file='temp.gt'):
     """
     Runs the modified Normal Vector Voting algorithm to estimate surface
     orientation (classification in surface patch with normal, crease junction
@@ -213,7 +213,7 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
             otherwise a local distance map is calculated later for each vertex
             (default)
         cores (int, optional): number of cores to run VV (collect_normal_votes
-            and estimate_normal) in parallel (default 6)
+            and estimate_normal) in parallel (default 10)
         runtimes (str, optional): if given, runtimes and some parameters are
             added to this file (default '')
         graph_file (str, optional): file path to save the graph, default file
@@ -260,6 +260,8 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
     # vertex property for storing the estimated tangent of the corresponding
     # vertex (if the vertex belongs to class 2):
     sg.graph.vp.t_v = sg.graph.new_vertex_property("vector<float>")
+    # vertex property for storing local average of estimated normals
+    sg.graph.vp.avg_normals = sg.graph.new_vertex_property('vector<float>')
 
     if full_dist_map is True and sg.__class__.__name__ == "TriangleGraph":
         # * Distance map between all pairs of vertices *
@@ -388,6 +390,32 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
             except KeyError:
                 classes_counts[class_v] = 1
         avg_num_neighbors = float(sum_num_neighbors) / float(num_v)
+    
+    # Post processing to correct orientation of normals
+    for v in sg.graph.vertices():
+        # Find the neighboring vertices of vertex v to be returned:
+        if sg.__class__.__name__ == "TriangleGraph":
+            neighbor_idx_to_dist = sg.find_geodesic_neighbors(
+                v, g_max)
+        else:  # PointGraph
+            neighbor_idx_to_dist = sg.find_geodesic_neighbors_exact(
+                v, g_max)
+            
+        pos = list(neighbor_idx_to_dist.keys())
+        
+        # Get neighboring vertices of v
+        adj_vertices = set(u for u in v.all_neighbors() if u in pos)
+        # Get neighboring normals of v
+        adj_normals = [vp_n_v[u] for u in adj_vertices]
+        # Calculate the average of the neighboring normals
+        avg_normal = np.mean(adj_normals, axis=0)
+        # Assign it as an attribute to v, we also normalize the averaged normal
+        sg.graph.vp.avg_normals[v] = avg_normal / np.linalg.norm(avg_normal)
+        
+        # Determine if the orientation of the normal at v should be reversed
+        dot_prod = np.dot(vp_n_v[v], sg.graph.vp.avg_normals[v])
+        if dot_prod < 0:
+            vp_n_v[v] = np.array([-x for x in vp_n_v[v]])
 
     # Printing out some numbers concerning the first pass:
     print("Average number of geodesic neighbors for all vertices: {}".format(
@@ -415,7 +443,7 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
 def curvature_estimation(
         radius_hit, graph_file='temp.gt', method='VV',
         page_curvature_formula=False, area2=True, poly_surf=None,
-        full_dist_map=False, cores=6, runtimes='', vertex_based=False, sg=None):
+        full_dist_map=False, cores=10, runtimes='', vertex_based=False, sg=None):
     """
     Runs the second pass of the modified Normal Vector Voting algorithm with
     the given method to estimate principle curvatures and directions for a
@@ -443,7 +471,7 @@ def curvature_estimation(
             approach), otherwise a local distance map is calculated later for
             each vertex (default)
         cores (int): number of cores to run VV (collect_curvature_votes and
-            estimate_curvature) in parallel (default 6)
+            estimate_curvature) in parallel (default 10)
         runtimes (str): if given, runtimes and some parameters are added to
             this file (default '')
         vertex_based (boolean, optional): if True (default False), curvature is
@@ -644,6 +672,6 @@ def curvature_estimation(
     # - duration2
     if runtimes != '':
         with open(runtimes, 'a') as f:
-            f.write("{};{}\n".format(method, duration2))
+            f.write("{};{}\n".format(method_print, duration2))
 
     return sg, surface_curv
