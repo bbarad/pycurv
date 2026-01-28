@@ -1,3 +1,4 @@
+import sys
 import time
 import numpy as np
 import math
@@ -7,6 +8,7 @@ import pathos.pools as pp
 from functools import partial
 from os import remove
 from os.path import isfile
+from tqdm import tqdm
 
 from .surface_graphs import TriangleGraph, PointGraph
 
@@ -331,11 +333,16 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
         print('Processing {} vertices in {} chunks of ~{} vertices each'.format(
             num_v, len(vertex_chunks), chunk_size))
 
-        chunk_results = p.map(
-            partial(_process_vertex_chunk_first_pass, sg=sg,
-                    g_max=g_max, a_max=a_max, sigma=sigma,
-                    full_dist_map=full_dist_map),
-            vertex_chunks)
+        chunk_results = list(tqdm(
+            p.imap(
+                partial(_process_vertex_chunk_first_pass, sg=sg,
+                        g_max=g_max, a_max=a_max, sigma=sigma,
+                        full_dist_map=full_dist_map),
+                vertex_chunks),
+            total=len(vertex_chunks),
+            desc="First pass",
+            unit="chunk",
+            file=sys.stderr))
         p.close()
         p.clear()
 
@@ -362,7 +369,7 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
 
     else:  # cores == 1, sequential processing
         sum_num_neighbors = 0
-        for i in range(num_v):
+        for i in tqdm(range(num_v), desc="First pass", unit="vtx", file=sys.stderr):
             if sg.__class__.__name__ == "TriangleGraph":
                 num_neighbors, V_v = collect_normal_votes(
                     i, g_max, a_max, sigma, full_dist_map=full_dist_map)
@@ -575,12 +582,17 @@ def curvature_estimation(
             # results_list has same length as good_vertices_ind
             # columns: t_1, t_2, kappa_1, kappa_2, gauss_curvature,
             # mean_curvature, shape_index, curvedness
-            chunk_results = p.map(
-                partial(_process_vertex_chunk_second_pass, sg=sg,
-                        g_max=g_max, sigma=sigma,
-                        page_curvature_formula=page_curvature_formula,
-                        a_max=a_max, full_dist_map=full_dist_map),
-                vertex_chunks)
+            chunk_results = list(tqdm(
+                p.imap(
+                    partial(_process_vertex_chunk_second_pass, sg=sg,
+                            g_max=g_max, sigma=sigma,
+                            page_curvature_formula=page_curvature_formula,
+                            a_max=a_max, full_dist_map=full_dist_map),
+                    vertex_chunks),
+                total=len(vertex_chunks),
+                desc="Second pass",
+                unit="chunk",
+                file=sys.stderr))
             p.close()
             p.clear()
 
@@ -608,7 +620,8 @@ def curvature_estimation(
 
         else:  # cores == 1, sequential processing
             # Curvature votes collection and estimation for VV:
-            for i, v_ind in enumerate(good_vertices_ind):
+            for i, v_ind in tqdm(enumerate(good_vertices_ind), total=len(good_vertices_ind),
+                                 desc="Second pass", unit="vtx", file=sys.stderr):
                 B_v = collect_curvature_votes(
                     v_ind, g_max, sigma,
                     page_curvature_formula=page_curvature_formula,
