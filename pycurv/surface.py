@@ -3,9 +3,7 @@ import vtk
 from . import pexceptions
 from . import pycurv_io as io
 import numpy as np
-from scipy.ndimage import binary_dilation
-from scipy.ndimage.morphology import distance_transform_edt
-from scipy.ndimage.filters import gaussian_filter
+from scipy.ndimage import binary_dilation, distance_transform_edt, gaussian_filter
 from .linalg import dot_norm
 import time
 
