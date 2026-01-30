@@ -1825,13 +1825,11 @@ class TriangleGraph(SurfaceGraph):
             # a small component with size below the threshold:
             self.graph.vp.small_component = \
                 self.graph.new_vertex_property("boolean")
-            num_vertices_in_small_components = 0
-            for v in self.graph.vertices():
-                if comp_labels_map[v] in small_components:
-                    self.graph.vp.small_component[v] = 1
-                    num_vertices_in_small_components += 1
-                else:
-                    self.graph.vp.small_component[v] = 0
+            # Vectorized membership check using numpy (much faster than Python loop)
+            comp_labels = comp_labels_map.a
+            is_small = np.isin(comp_labels, list(small_components))
+            self.graph.vp.small_component.a = is_small
+            num_vertices_in_small_components = np.sum(is_small)
             print("{} vertices are in the small components.".format(
                 num_vertices_in_small_components))
 
@@ -1839,9 +1837,9 @@ class TriangleGraph(SurfaceGraph):
                 print('Filtering out those vertices and their edges belonging '
                       'to the small components...')
                 # Set the filter to get only vertices NOT belonging to a small
-                # component.
-                self.graph.set_vertex_filter(
-                    self.graph.vp.small_component.t(lambda x: 1-x))
+                # component. Invert the property in-place using numpy (fast)
+                self.graph.vp.small_component.a = ~self.graph.vp.small_component.a
+                self.graph.set_vertex_filter(self.graph.vp.small_component)
                 # Purge filtered out vertices and edges from the graph:
                 self.graph.purge_vertices()
                 # Update graph's dictionary coordinates_to_vertex_index:

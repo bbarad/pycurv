@@ -100,11 +100,14 @@ class SegmentationGraph(object):
         Returns:
             None
         """
-        self.coordinates_to_vertex_index = {}
-        for vd in self.graph.vertices():
-            [x, y, z] = self.graph.vp.xyz[vd]
-            self.coordinates_to_vertex_index[
-                (x, y, z)] = self.graph.vertex_index[vd]
+        # Vectorized: get all coordinates as numpy array and build dict
+        # (much faster than iterating with graph-tool property access overhead)
+        # Convert to Python floats to ensure consistent hashing for dict keys
+        xyz = self.graph.vp.xyz.get_2d_array([0, 1, 2]).T
+        self.coordinates_to_vertex_index = {
+            (float(row[0]), float(row[1]), float(row[2])): i
+            for i, row in enumerate(xyz)
+        }
 
     def get_distance_cache(self, g_max, max_cache_size=10000):
         """
