@@ -812,23 +812,23 @@ class PointGraph(SurfaceGraph):
                 for k in range(0, 2):
                     x1, y1, z1 = points_cell.GetPoint(k)
                     p1 = (x1, y1, z1)
-                    # vertex descriptor of the 1st point
-                    vd1 = self.graph.vertex(
-                        self.coordinates_to_vertex_index[p1])
+                    # vertex index and descriptor of the 1st point
+                    idx1 = self.coordinates_to_vertex_index[p1]
+                    vd1 = self.graph.vertex(idx1)
                     for l in range(k + 1, 3):
                         x2, y2, z2 = points_cell.GetPoint(l)
                         p2 = (x2, y2, z2)
-                        # vertex descriptor of the 2nd point
-                        vd2 = self.graph.vertex(
-                            self.coordinates_to_vertex_index[p2])
-                        if not (
-                              (p1, p2) in self.coordinates_pair_connected or
-                              (p2, p1) in self.coordinates_pair_connected):
+                        # vertex index and descriptor of the 2nd point
+                        idx2 = self.coordinates_to_vertex_index[p2]
+                        vd2 = self.graph.vertex(idx2)
+                        # Use ordered vertex indices for edge tracking (faster than coordinate tuples)
+                        edge_key = (min(idx1, idx2), max(idx1, idx2))
+                        if edge_key not in self.coordinates_pair_connected:
                             # edge descriptor
                             ed = self.graph.add_edge(vd1, vd2)
                             self.graph.ep.distance[ed] = \
                                 self.distance_between_voxels(p1, p2)
-                            self.coordinates_pair_connected.add((p1, p2))
+                            self.coordinates_pair_connected.add(edge_key)
                             if verbose:
                                 print('\tThe neighbor points ({}, {}, {}) and '
                                       '({}, {}, {}) have been connected by an '
@@ -1345,10 +1345,6 @@ class TriangleGraph(SurfaceGraph):
             # Get the vertex descriptor representing the cell i (vertex i):
             vd_i = self.graph.vertex(i)
 
-            # Get the coordinates of the vertex i:
-            p_i = self.graph.vp.xyz[vd_i]  # a list
-            p_i = tuple(p_i)
-
             # Iterate over the ready neighbor_cells dict and shared_points list,
             # connecting cell i with a neighbor cell x with a "strong" edge
             # if they share 2 edges and with a "weak" edge otherwise (if
@@ -1357,23 +1353,26 @@ class TriangleGraph(SurfaceGraph):
                 # Get the vertex descriptor representing the cell x:
                 # vertex index of the current neighbor cell (O(1) lookup)
                 x = self.triangle_cell_ids[neighbor_cell_id]
-                # vertex descriptor of the current neighbor cell, vertex x
-                vd_x = self.graph.vertex(x)
 
-                # Get the coordinates of the vertex x:
-                p_x = self.graph.vp.xyz[vd_x]
-                p_x = tuple(p_x)
+                # Use ordered vertex indices for edge tracking (much faster than
+                # coordinate tuples - avoids slow graph-tool PropertyArray to tuple conversion)
+                edge_key = (min(i, x), max(i, x))
 
                 # Add an edge between the vertices i and x, if it has not
                 # been added yet:
-                if not (((p_i, p_x) in self.coordinates_pair_connected) or
-                        ((p_x, p_i) in self.coordinates_pair_connected)):
+                if edge_key not in self.coordinates_pair_connected:
+                    vd_x = self.graph.vertex(x)
                     ed = self.graph.add_edge(vd_i, vd_x)  # edge descriptor
-                    self.coordinates_pair_connected.add((p_i, p_x))
+                    self.coordinates_pair_connected.add(edge_key)
 
-                    # Add the distance of the edge
-                    self.graph.ep.distance[ed] = self.distance_between_voxels(
-                        p_i, p_x)
+                    # Get coordinates only when needed (for distance calculation)
+                    # Access coordinates as lists to avoid slow np.array() conversion
+                    p_i = self.graph.vp.xyz[vd_i]
+                    p_x = self.graph.vp.xyz[vd_x]
+
+                    # Inline Euclidean distance calculation (avoids np.array overhead)
+                    dist_sq = (p_i[0] - p_x[0])**2 + (p_i[1] - p_x[1])**2 + (p_i[2] - p_x[2])**2
+                    self.graph.ep.distance[ed] = dist_sq ** 0.5
 
                     # Assign the "strength" property to the edge as
                     # explained above:

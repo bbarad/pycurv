@@ -62,12 +62,6 @@ class SegmentationGraph(object):
         Initialized lazily via get_distance_cache() for large graphs.
         """
 
-        self._spatial_index = None
-        """SpatialIndex: KD-tree based spatial index for fast Euclidean neighbor
-        queries. Used to pre-filter candidates for geodesic neighbor search.
-        Initialized lazily via get_spatial_index().
-        """
-
     @staticmethod
     def distance_between_voxels(voxel1, voxel2):
         """
@@ -138,27 +132,6 @@ class SegmentationGraph(object):
         if self._distance_cache is not None:
             self._distance_cache.clear()
             self._distance_cache = None
-
-    def get_spatial_index(self):
-        """
-        Get or create the spatial index (KD-tree) for this graph.
-
-        The spatial index enables fast Euclidean neighbor queries, which are
-        used to pre-filter candidates for geodesic neighbor search. Since
-        geodesic distance >= Euclidean distance, vertices beyond Euclidean
-        radius cannot be within geodesic radius.
-
-        Returns:
-            SpatialIndex instance
-        """
-        if self._spatial_index is None:
-            from .spatial_index import SpatialIndex
-            self._spatial_index = SpatialIndex(self.graph)
-        return self._spatial_index
-
-    def clear_spatial_index(self):
-        """Clear the spatial index if it exists."""
-        self._spatial_index = None
 
     def compute_batch_distances(self, source_indices, g_max):
         """
@@ -659,44 +632,6 @@ class SegmentationGraph(object):
                     v_i = vertex(idx)
                     if (not only_surface) or orientation_class[v_i] == 1:
                         neighbor_id_to_dist[idx] = dist
-
-        elif self._spatial_index is not None:
-            # Use KD-tree pre-filtering for efficient geodesic neighbor search
-            # Since geodesic >= Euclidean, only vertices within Euclidean g_max
-            # could possibly be within geodesic g_max
-            candidate_indices = self._spatial_index.find_euclidean_neighbors(
-                source_idx, g_max)
-
-            if len(candidate_indices) == 0:
-                if verbose:
-                    print("0 neighbors (no Euclidean candidates)")
-                return neighbor_id_to_dist
-
-            # Remove source vertex from candidates
-            candidate_indices = candidate_indices[candidate_indices != source_idx]
-
-            if len(candidate_indices) == 0:
-                if verbose:
-                    print("0 neighbors")
-                return neighbor_id_to_dist
-
-            # Convert to list of vertex objects for shortest_distance target
-            candidate_vertices = [vertex(int(idx)) for idx in candidate_indices]
-
-            # Compute geodesic distances only to candidate targets
-            # This allows Dijkstra to terminate early once all targets are reached
-            dist_to_targets = shortest_distance(
-                self.graph, source=v, target=candidate_vertices,
-                weights=self.graph.ep.distance, max_dist=g_max)
-
-            # Process results - dist_to_targets is array matching candidate order
-            for i, idx in enumerate(candidate_indices):
-                dist = dist_to_targets[i]
-                # Check if within g_max (unreachable vertices have inf distance)
-                if dist <= g_max:
-                    v_i = vertex(int(idx))
-                    if (not only_surface) or orientation_class[v_i] == 1:
-                        neighbor_id_to_dist[int(idx)] = float(dist)
 
         else:
             # No optimizations available - compute full distance map

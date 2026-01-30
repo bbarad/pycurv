@@ -9,6 +9,7 @@ from functools import partial
 from os import remove
 from os.path import isfile
 from tqdm import tqdm
+from scipy import sparse
 
 from .surface_graphs import TriangleGraph, PointGraph
 
@@ -277,19 +278,11 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
     else:
         full_dist_map = None
 
-    # Initialize spatial index and distance cache for efficient neighbor search
-    # The spatial index uses a KD-tree for fast Euclidean pre-filtering
+    # Initialize distance cache for efficient neighbor search on large graphs
     # The distance cache stores Dijkstra results to reduce redundant computations
     graph_num_vertices = sg.graph.num_vertices()
 
-    # Initialize spatial index for KD-tree based Euclidean pre-filtering
-    # This is beneficial for all graph sizes when not using full_dist_map
-    if full_dist_map is None:
-        print("Initializing spatial index (KD-tree) for {} vertices".format(
-            graph_num_vertices))
-        sg.get_spatial_index()
-
-    # Also initialize distance cache for large graphs
+    # Initialize distance cache for large graphs
     if graph_num_vertices > 50000 and full_dist_map is None:
         cache_size = min(50000, graph_num_vertices // 10)
         print("Initializing distance cache with size {} for {} vertices".format(
@@ -392,30 +385,57 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
         avg_num_neighbors = float(sum_num_neighbors) / float(num_v)
     
     # Post processing to correct orientation of normals
-    for v in sg.graph.vertices():
-        # Find the neighboring vertices of vertex v to be returned:
-        if sg.__class__.__name__ == "TriangleGraph":
-            neighbor_idx_to_dist = sg.find_geodesic_neighbors(
-                v, g_max)
-        else:  # PointGraph
-            neighbor_idx_to_dist = sg.find_geodesic_neighbors_exact(
-                v, g_max)
-            
-        pos = list(neighbor_idx_to_dist.keys())
-        
-        # Get neighboring vertices of v
-        adj_vertices = set(u for u in v.all_neighbors() if u in pos)
-        # Get neighboring normals of v
-        adj_normals = [vp_n_v[u] for u in adj_vertices]
-        # Calculate the average of the neighboring normals
-        avg_normal = np.mean(adj_normals, axis=0)
-        # Assign it as an attribute to v, we also normalize the averaged normal
-        sg.graph.vp.avg_normals[v] = avg_normal / np.linalg.norm(avg_normal)
-        
-        # Determine if the orientation of the normal at v should be reversed
-        dot_prod = np.dot(vp_n_v[v], sg.graph.vp.avg_normals[v])
-        if dot_prod < 0:
-            vp_n_v[v] = np.array([-x for x in vp_n_v[v]])
+    # Fully vectorized using sparse matrix operations
+    print("\nPost-processing: correcting normal orientations...")
+
+    # Extract all normals into numpy array (N x 3)
+    normals = np.array([vp_n_v[v] for v in sg.graph.vertices()])
+
+    # Build sparse adjacency matrix with distance filtering
+    # Only include edges where distance <= g_max
+    rows = []
+    cols = []
+    ep_distance = sg.graph.ep.distance
+    for e in sg.graph.edges():
+        dist = ep_distance[e]
+        if dist <= g_max:
+            src, tgt = int(e.source()), int(e.target())
+            rows.extend([src, tgt])
+            cols.extend([tgt, src])
+
+    # Create sparse adjacency matrix
+    data = np.ones(len(rows), dtype=np.float32)
+    adj_matrix = sparse.csr_matrix((data, (rows, cols)), shape=(num_v, num_v))
+
+    # Row-normalize: divide each row by number of neighbors
+    row_sums = np.array(adj_matrix.sum(axis=1)).flatten()
+    row_sums[row_sums == 0] = 1  # Avoid division by zero
+    inv_row_sums = 1.0 / row_sums
+    normalizer = sparse.diags(inv_row_sums)
+    adj_normalized = normalizer @ adj_matrix
+
+    # Compute average normals via sparse matrix multiplication
+    avg_normals = adj_normalized @ normals  # (N x 3)
+
+    # Normalize the averaged normals
+    norms = np.linalg.norm(avg_normals, axis=1, keepdims=True)
+    norms[norms == 0] = 1  # Avoid division by zero
+    avg_normals = avg_normals / norms
+
+    # Compute dot products between original and average normals
+    dot_products = np.sum(normals * avg_normals, axis=1)
+
+    # Flip normals where dot product is negative
+    flip_mask = dot_products < 0
+    normals[flip_mask] *= -1
+    num_flipped = np.sum(flip_mask)
+    print(f"Flipped {num_flipped} normals for consistency")
+
+    # Write back to graph properties
+    vp_avg_normals = sg.graph.vp.avg_normals
+    for i, v in enumerate(sg.graph.vertices()):
+        vp_n_v[v] = normals[i]
+        vp_avg_normals[v] = avg_normals[i]
 
     # Printing out some numbers concerning the first pass:
     print("Average number of geodesic neighbors for all vertices: {}".format(
@@ -518,15 +538,6 @@ def curvature_estimation(
         print("Maximal triangle area = {}".format(a_max))
     else:
         a_max = 0.0
-
-    # Initialize spatial index if not already present (for standalone use)
-    # When called from normals_directions_and_curvature_estimation, the index
-    # is already initialized by normals_estimation
-    if full_dist_map is None and sg._spatial_index is None:
-        graph_num_vertices = sg.graph.num_vertices()
-        print("Initializing spatial index (KD-tree) for {} vertices".format(
-            graph_num_vertices))
-        sg.get_spatial_index()
 
     # * Adding vertex properties to be filled by all curvature methods *
     # vertex properties for storing the estimated principal directions of the
