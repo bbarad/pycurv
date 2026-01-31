@@ -1838,7 +1838,8 @@ class TriangleGraph(SurfaceGraph):
                       'to the small components...')
                 # Set the filter to get only vertices NOT belonging to a small
                 # component. Invert the property in-place using numpy (fast)
-                self.graph.vp.small_component.a = ~self.graph.vp.small_component.a
+                # Note: use logical_not, not ~, because property uses uint8 internally
+                self.graph.vp.small_component.a[:] = np.logical_not(self.graph.vp.small_component.a)
                 self.graph.set_vertex_filter(self.graph.vp.small_component)
                 # Purge filtered out vertices and edges from the graph:
                 self.graph.purge_vertices()

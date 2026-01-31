@@ -282,13 +282,6 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
     # The distance cache stores Dijkstra results to reduce redundant computations
     graph_num_vertices = sg.graph.num_vertices()
 
-    # Initialize distance cache for large graphs
-    if graph_num_vertices > 50000 and full_dist_map is None:
-        cache_size = min(50000, graph_num_vertices // 10)
-        print("Initializing distance cache with size {} for {} vertices".format(
-            cache_size, graph_num_vertices))
-        sg.get_distance_cache(g_max, max_cache_size=cache_size)
-
     t_end0 = time.time()
     duration0 = t_end0 - t_begin0
     minutes, seconds = divmod(duration0, 60)
@@ -328,6 +321,10 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
         print('Processing {} vertices in {} chunks of ~{} vertices each'.format(
             num_v, len(vertex_chunks), chunk_size))
 
+        # Explicit progress message for stderr (shows even if tqdm doesn't render)
+        print('First pass: processing {} chunks...'.format(
+            len(vertex_chunks)), file=sys.stderr)
+
         chunk_results = list(tqdm(
             p.imap(
                 partial(_process_vertex_chunk_first_pass, sg=sg,
@@ -340,6 +337,7 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
             file=sys.stderr))
         p.close()
         p.clear()
+        print('First pass: completed {} chunks'.format(len(vertex_chunks)), file=sys.stderr)
 
         # Flatten chunk results into a single list
         results_list = [result for chunk in chunk_results for result in chunk]
@@ -618,6 +616,10 @@ def curvature_estimation(
             print('Processing {} vertices in {} chunks of ~{} vertices each'.format(
                 num_good, len(vertex_chunks), chunk_size))
 
+            # Explicit progress message for stderr (shows even if tqdm doesn't render)
+            print('Second pass: processing {} chunks...'.format(
+                len(vertex_chunks)), file=sys.stderr)
+
             # results_list has same length as good_vertices_ind
             # columns: t_1, t_2, kappa_1, kappa_2, gauss_curvature,
             # mean_curvature, shape_index, curvedness
@@ -634,6 +636,7 @@ def curvature_estimation(
                 file=sys.stderr))
             p.close()
             p.clear()
+            print('Second pass: completed {} chunks'.format(len(vertex_chunks)), file=sys.stderr)
 
             # Flatten chunk results into a single list
             results_list = [result for chunk in chunk_results for result in chunk]
