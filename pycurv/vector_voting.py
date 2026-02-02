@@ -10,8 +10,13 @@ from os import remove
 from os.path import isfile
 from tqdm import tqdm
 from scipy import sparse
+import tempfile
+import os
 
 from .surface_graphs import TriangleGraph, PointGraph
+
+# Worker-local cache for loaded graphs (avoids reloading for each chunk)
+_worker_graph_cache = {}
 
 
 def _chunk_indices(indices, chunk_size):
@@ -28,12 +33,32 @@ def _chunk_indices(indices, chunk_size):
     return [indices[i:i + chunk_size] for i in range(0, len(indices), chunk_size)]
 
 
+def _get_cached_graph(graph_file, graph_class):
+    """Load graph from file, caching in worker-local storage.
+
+    Each worker process loads the graph once and reuses it for all chunks.
+    This avoids the overhead of pickling the graph with each task.
+    """
+    global _worker_graph_cache
+    cache_key = (graph_file, graph_class)
+
+    if cache_key not in _worker_graph_cache:
+        if graph_class == 'TriangleGraph':
+            sg = TriangleGraph()
+        else:
+            sg = PointGraph()
+        sg.graph = load_graph(graph_file)
+        _worker_graph_cache[cache_key] = sg
+
+    return _worker_graph_cache[cache_key]
+
+
 def _process_vertex_chunk_first_pass(vertex_indices, sg, g_max, a_max, sigma, full_dist_map):
     """Process a chunk of vertices for the first pass (normal estimation).
 
     Args:
         vertex_indices: List of vertex indices to process
-        sg: Surface graph object
+        sg: Surface graph object OR tuple (graph_file, graph_class) for lazy loading
         g_max: Maximum geodesic distance
         a_max: Maximum triangle area
         sigma: Sigma parameter for weighting
@@ -42,6 +67,11 @@ def _process_vertex_chunk_first_pass(vertex_indices, sg, g_max, a_max, sigma, fu
     Returns:
         List of (num_neighbors, class_v, n_v, t_v) tuples for each vertex
     """
+    # Support lazy loading from file to reduce IPC overhead
+    if isinstance(sg, tuple):
+        graph_file, graph_class = sg
+        sg = _get_cached_graph(graph_file, graph_class)
+
     results = []
     for idx in vertex_indices:
         result = sg.first_pass(idx, g_max=g_max, a_max=a_max,
@@ -56,7 +86,7 @@ def _process_vertex_chunk_second_pass(vertex_indices, sg, g_max, sigma,
 
     Args:
         vertex_indices: List of vertex indices to process
-        sg: Surface graph object
+        sg: Surface graph object OR tuple (graph_file, graph_class) for lazy loading
         g_max: Maximum geodesic distance
         sigma: Sigma parameter for weighting
         page_curvature_formula: Whether to use Page's curvature formula
@@ -66,6 +96,11 @@ def _process_vertex_chunk_second_pass(vertex_indices, sg, g_max, sigma,
     Returns:
         List of (t_1, t_2, kappa_1, kappa_2, gauss, mean, shape, curvedness) tuples
     """
+    # Support lazy loading from file to reduce IPC overhead
+    if isinstance(sg, tuple):
+        graph_file, graph_class = sg
+        sg = _get_cached_graph(graph_file, graph_class)
+
     results = []
     for idx in vertex_indices:
         result = sg.second_pass(idx, g_max=g_max, sigma=sigma,
@@ -311,6 +346,14 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
     vp_t_v = sg.graph.vp.t_v
 
     if cores > 1:  # parallel processing
+        # Save graph to temp file - workers load from file instead of pickling
+        # This significantly reduces IPC overhead for large graphs
+        temp_graph_fd, temp_graph_file = tempfile.mkstemp(suffix='.gt')
+        os.close(temp_graph_fd)
+        sg.graph.save(temp_graph_file)
+        graph_class = sg.__class__.__name__
+        sg_ref = (temp_graph_file, graph_class)  # lightweight reference
+
         p = pp.ProcessPool(cores)
         print('Opened a pool with {} processes'.format(cores))
 
@@ -327,7 +370,7 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
 
         chunk_results = list(tqdm(
             p.imap(
-                partial(_process_vertex_chunk_first_pass, sg=sg,
+                partial(_process_vertex_chunk_first_pass, sg=sg_ref,
                         g_max=g_max, a_max=a_max, sigma=sigma,
                         full_dist_map=full_dist_map),
                 vertex_chunks),
@@ -338,6 +381,10 @@ def normals_estimation(sg, radius_hit, epsilon=0, eta=0, full_dist_map=False,
         p.close()
         p.clear()
         print('First pass: completed {} chunks'.format(len(vertex_chunks)), file=sys.stderr)
+
+        # Clean up temp file
+        if isfile(temp_graph_file):
+            remove(temp_graph_file)
 
         # Flatten chunk results into a single list
         results_list = [result for chunk in chunk_results for result in chunk]
@@ -606,6 +653,14 @@ def curvature_estimation(
 
     if method == "VV":
         if cores > 1:  # parallel processing
+            # Save graph to temp file - workers load from file instead of pickling
+            # This significantly reduces IPC overhead for large graphs
+            temp_graph_fd, temp_graph_file = tempfile.mkstemp(suffix='.gt')
+            os.close(temp_graph_fd)
+            sg.graph.save(temp_graph_file)
+            graph_class = sg.__class__.__name__
+            sg_ref = (temp_graph_file, graph_class)  # lightweight reference
+
             p = pp.ProcessPool(cores)
             print('Opened a pool with {} processes'.format(cores))
 
@@ -625,7 +680,7 @@ def curvature_estimation(
             # mean_curvature, shape_index, curvedness
             chunk_results = list(tqdm(
                 p.imap(
-                    partial(_process_vertex_chunk_second_pass, sg=sg,
+                    partial(_process_vertex_chunk_second_pass, sg=sg_ref,
                             g_max=g_max, sigma=sigma,
                             page_curvature_formula=page_curvature_formula,
                             a_max=a_max, full_dist_map=full_dist_map),
@@ -637,6 +692,10 @@ def curvature_estimation(
             p.close()
             p.clear()
             print('Second pass: completed {} chunks'.format(len(vertex_chunks)), file=sys.stderr)
+
+            # Clean up temp file
+            if isfile(temp_graph_file):
+                remove(temp_graph_file)
 
             # Flatten chunk results into a single list
             results_list = [result for chunk in chunk_results for result in chunk]
