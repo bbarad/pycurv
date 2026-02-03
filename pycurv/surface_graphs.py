@@ -1422,16 +1422,20 @@ class TriangleGraph(SurfaceGraph):
         Returns:
             vtk.vtkPolyData with triangle-cells
         """
+        from vtk.util.numpy_support import numpy_to_vtk
+
         if self.graph.num_vertices() > 0:
             # Initialization
             poly_triangles = vtk.vtkPolyData()
             points = vtk.vtkPoints()
-            vertex_arrays = list()
-            # Vertex property arrays
+
+            # Pre-compute property metadata (avoid repeated type lookups)
+            prop_metadata = []  # list of (prop_key, num_components, numpy_dtype, vtk_array)
+            types_converter = TypesConverter()  # single instance reused
             for prop_key in list(self.graph.vp.keys()):
                 data_type = self.graph.vp[prop_key].value_type()
                 if (data_type != 'string' and data_type != 'python::object' and
-                        prop_key != 'points'):  # and prop_key != 'xyz'
+                        prop_key != 'points'):
                     if verbose:
                         print('\nvertex property key: {}'.format(prop_key))
                         print('value type: {}'.format(data_type))
@@ -1440,19 +1444,21 @@ class TriangleGraph(SurfaceGraph):
                     else:  # vector
                         num_components = len(
                             self.graph.vp[prop_key][self.graph.vertex(0)])
-                    array = TypesConverter().gt_to_vtk(data_type)
-                    array.SetName(prop_key)
+                    vtk_array = types_converter.gt_to_vtk(data_type)
+                    vtk_array.SetName(prop_key)
                     if verbose:
                         print('number of components: {}'.format(num_components))
-                    array.SetNumberOfComponents(num_components)
-                    vertex_arrays.append(array)
+                    vtk_array.SetNumberOfComponents(num_components)
+                    numpy_dtype = types_converter.gt_to_numpy(data_type)
+                    prop_metadata.append((prop_key, num_components, numpy_dtype, vtk_array))
             if verbose:
-                print('\nvertex arrays length: {}'.format(len(vertex_arrays)))
+                print('\nvertex arrays length: {}'.format(len(prop_metadata)))
 
             # Geometry
             # lut[vertex_index, triangle_point_index*] = point_array_index**
             # *ALWAYS 0-2, **0-(NumPoints-1)
-            lut = np.zeros(shape=(self.graph.num_vertices(), 3), dtype=int)
+            num_vertices = self.graph.num_vertices()
+            lut = np.zeros(shape=(num_vertices, 3), dtype=int)
             i = 0  # next new point index
             # dictionary of points with a key (x, y, z) and the index in VTK
             # points list as a value
@@ -1482,23 +1488,31 @@ class TriangleGraph(SurfaceGraph):
                 # is ALWAYS 0-2.
                 # The second parameter is the index into the point (geometry)
                 # array, so this can range from 0-(NumPoints-1)
-                triangle.GetPointIds().SetId(
-                    0, lut[self.graph.vertex_index[vd], 0])
-                triangle.GetPointIds().SetId(
-                    1, lut[self.graph.vertex_index[vd], 1])
-                triangle.GetPointIds().SetId(
-                    2, lut[self.graph.vertex_index[vd], 2])
+                v_idx = self.graph.vertex_index[vd]
+                triangle.GetPointIds().SetId(0, lut[v_idx, 0])
+                triangle.GetPointIds().SetId(1, lut[v_idx, 1])
+                triangle.GetPointIds().SetId(2, lut[v_idx, 2])
                 triangles.InsertNextCell(triangle)
-                for array in vertex_arrays:
-                    prop_key = array.GetName()
-                    n_comp = array.GetNumberOfComponents()
-                    data_type = self.graph.vp[prop_key].value_type()
-                    data_type = TypesConverter().gt_to_numpy(data_type)
-                    array.InsertNextTuple(self.get_vertex_prop_entry(
-                        prop_key, vd, n_comp, data_type))
             if verbose:
                 print('number of triangle cells: {}'.format(
                     triangles.GetNumberOfCells()))
+
+            # Build vertex property arrays - use bulk operations for scalars
+            vertex_arrays = []
+            for prop_key, num_components, numpy_dtype, vtk_array in prop_metadata:
+                prop = self.graph.vp[prop_key]
+                if num_components == 1:
+                    # Scalar property - use numpy_to_vtk for bulk transfer
+                    arr = np.asarray(prop.get_array(), dtype=np.float64)
+                    vtk_arr = numpy_to_vtk(arr, deep=True)
+                    vtk_arr.SetName(prop_key)
+                    vertex_arrays.append(vtk_arr)
+                else:
+                    # Vector property - still need per-vertex iteration
+                    for vd in self.graph.vertices():
+                        vtk_array.InsertNextTuple(tuple(
+                            numpy_dtype(prop[vd][k]) for k in range(num_components)))
+                    vertex_arrays.append(vtk_array)
 
             # vtkPolyData construction
             poly_triangles.SetPoints(points)
